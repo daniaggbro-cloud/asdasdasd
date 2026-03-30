@@ -1,0 +1,102 @@
+--[[
+    TumbaHub - Tier Shop Skip (Standalone Edition)
+    Описание: Разблокирует обход уровней (Tier) в магазине Bedwars.
+    Позволяет покупать Железный и Алмазный меч/броню БЕЗ покупки предыдущих уровней.
+    Использование: Выполнить в Synapse Z перед тем, как открыть магазин в матче.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
+
+local success, BedwarsShop = pcall(function()
+    -- Безопасно подхватываем таблицу магазина прямо из ядра игры
+    return require(ReplicatedStorage:WaitForChild("TS")
+        :WaitForChild("games")
+        :WaitForChild("bedwars")
+        :WaitForChild("shop")
+        :WaitForChild("bedwars-shop")
+    ).BedwarsShop
+end)
+
+-- Функция для красивых уведомлений на экране
+local function sendNotification(title, text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Icon = "rbxassetid://6022668888", -- Иконка алмаза
+            Duration = 5
+        })
+    end)
+end
+
+if not success or not BedwarsShop or type(BedwarsShop.ShopItems) ~= "table" then
+    print("❌ [TumbaHub] Ошибка! Не удалось загрузить таблицу магазина Bedwars.")
+    sendNotification("TumbaHub Ошибка", "Магазин не найден в памяти!")
+    return
+end
+
+print("--------------------------------------------------")
+print("🔥 [TumbaHub] Начинаю разблокировку Tier магазина...")
+print("--------------------------------------------------")
+
+local unlockedCount = 0
+local unlockedNames = {}
+
+-- Детализированный обход всех вещей в магазине
+for index, item in pairs(BedwarsShop.ShopItems) do
+    if type(item) == "table" then
+        local wasLocked = false
+        
+        -- Проверка 1: Требуется ли наличие предыдущего меча/брони в инвентаре?
+        if item.requireInInventoryToTierUp then
+            item.requireInInventoryToTierUp = false
+            wasLocked = true
+        end
+        
+        -- Проверка 2: Завязка на предыдущий уровень (prevTier)
+        if item.prevTier then
+            item.prevTier = nil
+            wasLocked = true
+        end
+        
+        -- Проверка 3: Завязка на следующий уровень (чтобы кнопка не менялась)
+        if item.nextTier then
+            item.nextTier = nil
+            wasLocked = true
+        end
+        
+        -- Проверка 4: Строгая блокировка после покупки (например, нельзя купить второй такой же топорик)
+        if item.lockAfterPurchase then
+            item.lockAfterPurchase = false
+            wasLocked = true
+        end
+        
+        -- Проверка 5: Система уровневости (tiered)
+        if item.tiered then
+            item.tiered = false
+            wasLocked = true
+        end
+        
+        -- Если мы взломали эту вещь, логируем это детально!
+        if wasLocked and item.itemType then
+            unlockedCount = unlockedCount + 1
+            table.insert(unlockedNames, item.itemType)
+            print("✔️ [АНЛОК] Разблокирован предмет -> " .. tostring(item.itemType))
+        end
+    end
+end
+
+print("--------------------------------------------------")
+print("✅ [TumbaHub] Успешно завершено! Взломано предметов: " .. tostring(unlockedCount))
+print("--------------------------------------------------")
+
+-- Выводим итог на экран игрока
+if unlockedCount > 0 then
+    sendNotification("TumbaHub TIER SKIP", "Магазин взломан! Разблокировано " .. tostring(unlockedCount) .. " предметов.")
+else
+    sendNotification("TumbaHub TIER SKIP", "Все предметы уже разблокированы!")
+end
+
+-- Этот скрипт необходимо запускать каждый раз, когда начинается новый раунд, 
+-- так как таблица магазина загружается заново.
