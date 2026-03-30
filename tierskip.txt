@@ -1,102 +1,218 @@
 --[[
-    TumbaHub - Tier Shop Skip (Standalone Edition)
-    Описание: Разблокирует обход уровней (Tier) в магазине Bedwars.
-    Позволяет покупать Железный и Алмазный меч/броню БЕЗ покупки предыдущих уровней.
-    Использование: Выполнить в Synapse Z перед тем, как открыть магазин в матче.
+    TumbaHub - BedPlates (Bed Protect ESP)
+    Описание: Динамическое сканирование защитных слоев кровати.
+    Отрисовка в строгом минималистичном стиле CatV6 (олько игровые иконки блоков).
 ]]
 
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local StarterGui = game:GetService("StarterGui")
 
-local success, BedwarsShop = pcall(function()
-    -- Безопасно подхватываем таблицу магазина прямо из ядра игры
-    return require(ReplicatedStorage:WaitForChild("TS")
-        :WaitForChild("games")
-        :WaitForChild("bedwars")
-        :WaitForChild("shop")
-        :WaitForChild("bedwars-shop")
-    ).BedwarsShop
-end)
-
--- Функция для красивых уведомлений на экране
-local function sendNotification(title, text)
-    pcall(function()
-        StarterGui:SetCore("SendNotification", {
-            Title = title,
-            Text = text,
-            Icon = "rbxassetid://6022668888", -- Иконка алмаза
-            Duration = 5
-        })
-    end)
-end
-
-if not success or not BedwarsShop or type(BedwarsShop.ShopItems) ~= "table" then
-    print("❌ [TumbaHub] Ошибка! Не удалось загрузить таблицу магазина Bedwars.")
-    sendNotification("TumbaHub Ошибка", "Магазин не найден в памяти!")
-    return
-end
-
-print("--------------------------------------------------")
-print("🔥 [TumbaHub] Начинаю разблокировку Tier магазина...")
-print("--------------------------------------------------")
-
-local unlockedCount = 0
-local unlockedNames = {}
-
--- Детализированный обход всех вещей в магазине
-for index, item in pairs(BedwarsShop.ShopItems) do
-    if type(item) == "table" then
-        local wasLocked = false
-        
-        -- Проверка 1: Требуется ли наличие предыдущего меча/брони в инвентаре?
-        if item.requireInInventoryToTierUp then
-            item.requireInInventoryToTierUp = false
-            wasLocked = true
-        end
-        
-        -- Проверка 2: Завязка на предыдущий уровень (prevTier)
-        if item.prevTier then
-            item.prevTier = nil
-            wasLocked = true
-        end
-        
-        -- Проверка 3: Завязка на следующий уровень (чтобы кнопка не менялась)
-        if item.nextTier then
-            item.nextTier = nil
-            wasLocked = true
-        end
-        
-        -- Проверка 4: Строгая блокировка после покупки (например, нельзя купить второй такой же топорик)
-        if item.lockAfterPurchase then
-            item.lockAfterPurchase = false
-            wasLocked = true
-        end
-        
-        -- Проверка 5: Система уровневости (tiered)
-        if item.tiered then
-            item.tiered = false
-            wasLocked = true
-        end
-        
-        -- Если мы взломали эту вещь, логируем это детально!
-        if wasLocked and item.itemType then
-            unlockedCount = unlockedCount + 1
-            table.insert(unlockedNames, item.itemType)
-            print("✔️ [АНЛОК] Разблокирован предмет -> " .. tostring(item.itemType))
-        end
+-- Очистка старых ESP
+for _, v in pairs(CoreGui:GetChildren()) do
+    if v.Name == "TumbaHub_BedPlates" then
+        v:Destroy()
     end
 end
 
-print("--------------------------------------------------")
-print("✅ [TumbaHub] Успешно завершено! Взломано предметов: " .. tostring(unlockedCount))
-print("--------------------------------------------------")
+local espFolder = Instance.new("Folder", CoreGui)
+espFolder.Name = "TumbaHub_BedPlates"
 
--- Выводим итог на экран игрока
-if unlockedCount > 0 then
-    sendNotification("TumbaHub TIER SKIP", "Магазин взломан! Разблокировано " .. tostring(unlockedCount) .. " предметов.")
-else
-    sendNotification("TumbaHub TIER SKIP", "Все предметы уже разблокированы!")
+local bedData = {}
+
+-- 1. Вытаскиваем базу предметов для реальных картинок (AssetID)
+local ItemMeta = {}
+pcall(function()
+    ItemMeta = require(ReplicatedStorage.TS.item["item-meta"]).items
+end)
+
+-- Устанавливаем приоритет сортировки (чтобы обсидиан всегда был слева/внутри, а шерсть снаружи)
+local blockPriority = {
+    ["obsidian"] = 1,
+    ["stone_brick"] = 2,
+    ["ceramic"] = 3,
+    ["wood_planks_oak"] = 4,
+    ["wool"] = 5
+}
+
+local function getPriority(bName)
+    if blockPriority[bName] then return blockPriority[bName] end
+    if string.find(bName, "wood") then return 4 end
+    if string.find(bName, "wool") then return 5 end
+    return 10 -- Остальной мусор
 end
 
--- Этот скрипт необходимо запускать каждый раз, когда начинается новый раунд, 
--- так как таблица магазина загружается заново.
+-- Фильтрация блоков вокруг кровати
+local function getBlocksInLayer(bedCFrame, size)
+    local overlapParams = OverlapParams.new()
+    local mapBlocks = workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("Blocks")
+    
+    if mapBlocks then
+        overlapParams.FilterDescendantsInstances = {mapBlocks}
+        overlapParams.FilterType = Enum.RaycastFilterType.Include
+    end
+    
+    local parts = workspace:GetPartBoundsInBox(bedCFrame, size, overlapParams)
+    local counts = {}
+    
+    local bedY = bedCFrame.Position.Y
+    
+    for _, part in ipairs(parts) do
+        -- Отсеиваем всё, чего нет в базе ItemMeta, чтобы избавиться от фейк-блоков
+        if part:IsA("BasePart") and ItemMeta[part.Name] then
+            -- Игнорируем пол (блоки, которые ниже центра кровати более чем на 1 стад)
+            if part.Position.Y < bedY - 1 then continue end
+            
+            local name = part.Name
+            counts[name] = (counts[name] or 0) + 1
+        end
+    end
+    return counts
+end
+
+local function areTablesEqual(t1, t2)
+    for k, v in pairs(t1) do if t2[k] ~= v then return false end end
+    for k, v in pairs(t2) do if t1[k] ~= v then return false end end
+    return true
+end
+
+-- Перерисовываем UI в чистом стиле CatV6 BedPlates
+local function rebuildUI(bData, currentBlocks)
+    -- Очищаем полностью
+    for _, v in pairs(bData.gui:GetChildren()) do
+        v:Destroy()
+    end
+    
+    local blockKeys = {}
+    for k, _ in pairs(currentBlocks) do
+        table.insert(blockKeys, k)
+    end
+    
+    -- Сортируем блоки по их "твердости"
+    table.sort(blockKeys, function(a, b)
+        return getPriority(a) < getPriority(b)
+    end)
+    
+    local blockCount = #blockKeys
+    
+    if blockCount > 0 then
+        -- Подложка
+        local bg = Instance.new("Frame")
+        bg.Name = "Background"
+        bg.BackgroundColor3 = Color3.fromRGB(5, 5, 12) -- Глубокий темно-синий/черный стиль
+        bg.BackgroundTransparency = 0.3
+        bg.BorderSizePixel = 0
+        bg.Parent = bData.gui
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = bg
+        
+        local padding = Instance.new("UIPadding")
+        padding.PaddingLeft = UDim.new(0, 4)
+        padding.PaddingRight = UDim.new(0, 4)
+        padding.PaddingTop = UDim.new(0, 4)
+        padding.PaddingBottom = UDim.new(0, 4)
+        padding.Parent = bg
+        
+        local layout = Instance.new("UIListLayout")
+        layout.FillDirection = Enum.FillDirection.Horizontal
+        layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        layout.VerticalAlignment = Enum.VerticalAlignment.Center
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.Padding = UDim.new(0, 6)
+        layout.Parent = bg
+        
+        -- Отрисовка картинок
+        local layoutOrder = 1
+        for _, bName in ipairs(blockKeys) do
+            local meta = ItemMeta[bName] or {}
+            local displayImage = meta.image or "" 
+            
+            if displayImage ~= "" then
+                local img = Instance.new("ImageLabel")
+                img.Size = UDim2.new(0, 26, 0, 26)
+                img.BackgroundTransparency = 1
+                img.Image = displayImage
+                img.ScaleType = Enum.ScaleType.Fit
+                img.LayoutOrder = layoutOrder
+                img.Parent = bg
+                
+                layoutOrder = layoutOrder + 1
+            end
+        end
+        
+        -- Высчитываем размер в зависимости от количества уникальных иконок
+        local totalWidth = (blockCount * 26) + ((blockCount - 1) * 6) + 8
+        bData.gui.Size = UDim2.new(0, totalWidth, 0, 34)
+        bg.Size = UDim2.new(1, 0, 1, 0)
+    else
+        -- Если у кровати снята защита - полностью прячем UI (как в Catv6/Vape)
+        bData.gui.Size = UDim2.new(0, 0, 0, 0)
+    end
+end
+
+local lastCheck = 0
+
+RunService.Heartbeat:Connect(function()
+    local now = tick()
+    if now - lastCheck < 0.5 then return end
+    lastCheck = now
+
+    local beds = CollectionService:GetTagged("bed")
+    
+    for _, bedModel in ipairs(beds) do
+        local bedCore
+        if bedModel:IsA("Model") then
+            bedCore = bedModel:FindFirstChild("Covers") or bedModel.PrimaryPart or bedModel:FindFirstChildWhichIsA("BasePart")
+        elseif bedModel:IsA("BasePart") then
+            bedCore = bedModel
+        end
+        if not bedCore then continue end
+        
+        local bCFrame = bedCore.CFrame
+        -- Узкий куб вокруг защиты, игнорирующий пол (с Y фиксом)
+        local layer1Size = Vector3.new(12, 10, 12) 
+        
+        local currentBlocks = getBlocksInLayer(bCFrame, layer1Size)
+        
+        local bData = bedData[bedModel]
+        if not bData then
+            bData = {
+                gui = Instance.new("BillboardGui"),
+                lastBlocks = {} 
+            }
+            
+            bData.gui.Name = "BedPlatesESP"
+            bData.gui.Adornee = bedCore
+            bData.gui.Size = UDim2.new(0, 0, 0, 0)
+            bData.gui.StudsOffset = Vector3.new(0, 3, 0)
+            bData.gui.AlwaysOnTop = true
+            bData.gui.Parent = espFolder
+            bData.gui.ResetOnSpawn = false
+            bData.gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+            bedData[bedModel] = bData
+        end
+        
+        -- Проверка на изменения
+        if not areTablesEqual(bData.lastBlocks, currentBlocks) then
+            local newCache = {}
+            for k,v in pairs(currentBlocks) do newCache[k] = v end
+            bData.lastBlocks = newCache
+            
+            rebuildUI(bData, currentBlocks)
+        end
+    end
+    
+    for model, data in pairs(bedData) do
+        if typeof(model) ~= "Instance" or model.Parent == nil then
+            data.gui:Destroy()
+            bedData[model] = nil
+        end
+    end
+end)
+
+print("✅ [TumbaHub] BedPlates (Чистая CatV6 версия) загружен!")
